@@ -1,4 +1,4 @@
-# Title: Calibrating the Farmer-Joshi Agent-Based Model of Financial Markets
+# Title: Calibrating an Adabtive Farmer-Joshi Agent-Based Model of Financial Markets
 # Authors: Ivan Jericevich & Murray McKechnie
 # Supervisor: A/Prof. Tim Gebbie
 # 1. Set working directory and load packages
@@ -7,8 +7,8 @@
 # 4. Get empirical moments
 # 5. Apply moving block bootstrap with overlapping blocks to obtain distribution of actual moments
 # 6. Simulate price path for given set of parameters
-#     - Set up data frame keeping track of all agents' strategies
-#     - Obtain omega for chartists
+#     - Set up dataframe keeping track of all agents' strategies
+#     - Obtain omega for chartists using state dependent trend strategy
 #     - Obtain omega for fundamentalists using state dependent value strategy
 #     - Update positions, profits and strategies
 #     - Allow for agents to adapt their strategy according to the profits made from each strategy
@@ -17,13 +17,18 @@
 #     - Return deviations from actual moments weighted by the uncertainty in each moment (W)
 # 8. Implement genetic algorithm
 #     - Apply GA to price paths
-#     - Decode parameters given by GA and NMTA so they can be entered into simulate function
+#     - Decode parameters given by GA so they can be entered into simulate function
 #     - Get confidence intervals for price paths, parameters and moments
 # 9. Implement Nelder-Mead with threshold accepting algorithm
+#     - Apply NMTA to price paths
+#     - Get confidence intervals for price paths, parameters and moments
 # 10. Store, visualise results and test replication of stylised facts about financial markets
+#     - Log price paths
+#     - Normal probability plots
+#     - Autocorrelation of log returns plots
+#     - Autocorrelation of absolute log returns plots
+#     - Objective surface plots
 # 11. Save workspace
-# Notes - Make code more reproducable (eg. search for data file automatically)
-#       - Make code more efficient
 ####################################################################################################
 
 ### 1. Preliminaries
@@ -31,7 +36,6 @@ cat("\014") # Clear console
 rm(list = ls()) # Clear environment
 if(!is.null(dev.list())) dev.off() # Clear plots
 setwd("~/Honours Project")
-# setwd("C:/Users/Ivan/OneDrive/UCT/UCT 2019/STA4010W/Honours Project/R")
 load("Workspace1.RData") # Load data from previous workspace
 list.of.packages = c("openxlsx", "timeSeries", "ggplot2", "timeDate", "pracma", "GA", "doParallel", "plotly", "dplyr", "forecast", "tseries", "fracdiff", "e1071", "extremefit", "latex2exp", "qqplotr", "doRNG", "plot3D", "pracma", "TTR") # This automatically installs and loads packages not already installed on the users computer
 new.packages = list.of.packages[!(list.of.packages %in% installed.packages()[, "Package"])] # openxlsx = read.xlsx, timeSeries = timeSeries, timeDate = kurtosis, pracma = hurstexp, GA = ga, doParallel = foreach, forecast = auto.arima, tseries = garch, fracdiff = fdGPH, e1071, extremefit = hill, latex2exp = TeX, qqplotr = stat_qq_point, doRNG = seed in ga, plot3D = persp3D, pracma = trimmean, doSNOW = registerDoSNOW, TTR = SMA
@@ -329,7 +333,7 @@ bootstrap_moments_GA = foreach(i = 1:1000, .combine = "rbind", .packages = c("pr
   Moments(diff(do.call(Simulate, args = args_GA)$p_sim[-c(1:201)]), returns)
 }
 stopCluster(cl)
-set.seed(12) # 12, 7
+set.seed(12)
 simulation_GA = do.call(Simulate, args = args_GA)
 simulation_price_GA = simulation_GA$p_sim[-c(1:201)] # Simulate using optimised parameters
 simulation_returns_GA = diff(simulation_price_GA)
@@ -340,8 +344,7 @@ pi_f_GA = simulation_GA$pi_f[-c(1:202)]
 ####################################################################################################
 
 ### 9. Nelder-Mead with threshold accepting
-rssimple = function(x, d = 50) { # Calculates simplified hurst exponent. Taken directly from hurstexp. Need to use this to not get errors on occasion.
-  
+rssimple = function(x, d = 50) {
   stopifnot(is.numeric(x), is.numeric(d))
   d <- max(2, floor(d[1]))
   N <- length(x)
@@ -349,19 +352,16 @@ rssimple = function(x, d = 50) { # Calculates simplified hurst exponent. Taken d
     x <- c(x, (x[N - 1] + x[N])/2)
     N <- N + 1
   }
-  
   divisors <- function(n, n0 = 2) {
     n0n <- n0:floor(n/2)
     dvs <- n0n[n%%n0n == 0]
     return(dvs)
   }
-  
   N <- length(x)
   dmin <- d
   N0 <- min(floor(0.99 * N), N - 1)
   N1 <- N0
   dv <- divisors(N1, dmin)
-  
   for (i in (N0 + 1):N) {
     dw <- divisors(i, dmin)
     if (length(dw) > length(dv)) {
@@ -369,7 +369,6 @@ rssimple = function(x, d = 50) { # Calculates simplified hurst exponent. Taken d
       dv <- dw
     }
   }
-  
   OptN <- N1
   d <- dv
   x <- x[1:OptN]
@@ -380,6 +379,7 @@ rssimple = function(x, d = 50) { # Calculates simplified hurst exponent. Taken d
   
   log(rs)/log(n)
 }
+
 Moments = function(returns1, returns2) {
   mean_e = mean(returns1)
   stdev_e = sd(returns1)
@@ -392,13 +392,12 @@ Moments = function(returns1, returns2) {
   hill_e = mean(hill(returns1)$hill[(0.05 * length(returns1)):(0.1 * length(returns1))]) # Hill estimator
   return(c(mean_e, stdev_e, kurtosis_e, ks_e, hurst_e, gph_e, adf_e, garch_e, hill_e))
 }
+
 ObjectiveFunction = function(parameters) {
   I = parameters[17] # Number of Monte Carlo replications
   G = matrix(NA, nrow = 9, ncol = I) # Initialise G
   for (i in 1:I) {
-    p_sim = Simulate(price = price, N = ceiling(parameters[1]), lambda = parameters[2], a = parameters[3], d_max = ceiling(parameters[5]) + floor(parameters[4]), # d_min + distance to d_max
-                     d_min = ceiling(parameters[5]), mu_eta = parameters[6], sigma_eta = parameters[7], sigma_zeta = parameters[8], T_max = parameters[9] + parameters[15], tau_min = parameters[10], v_max = parameters[11] + parameters[12], # v_min + distance to v_max
-                     v_min = parameters[12], Gamma = parameters[13], H = ceiling(parameters[14]), T_min = parameters[15], tau_max = parameters[10] + parameters[16])$p_sim # Ceiling and floor functions act as integer constraints
+    p_sim = Simulate(price = price, N = ceiling(parameters[1]), lambda = parameters[2], a = parameters[3], d_max = ceiling(parameters[5]) + floor(parameters[4]), d_min = ceiling(parameters[5]), mu_eta = parameters[6], sigma_eta = parameters[7], sigma_zeta = parameters[8], T_max = parameters[9] + parameters[15], tau_min = parameters[10], v_max = parameters[11] + parameters[12], v_min = parameters[12], Gamma = parameters[13], H = ceiling(parameters[14]), T_min = parameters[15], tau_max = parameters[10] + parameters[16])$p_sim # Ceiling and floor functions act as integer constraints
     returns_sim = diff(p_sim[-c(1:201)])
     if(max(abs(na.omit(returns_sim))) > 10 | sum(is.na(returns_sim)) > 0) {
       return(-100000)
@@ -419,13 +418,11 @@ ObjectiveFunction = function(parameters) {
   G = apply(G, 1, mean)
   return(-t(G)%*%W%*%G)
 }
+
 ObjectiveFunction2 = function(parameters) {
   I = parameters[17] # Number of Monte Carlo replications
-  G <- foreach(i = 1:I, .combine = "cbind", .export = ls(globalenv()), 
-               .packages = list.of.packages) %dorng% {
-                 p_sim = Simulate(price = price, N = ceiling(parameters[1]), lambda = parameters[2], a = parameters[3], d_max = ceiling(parameters[5]) + floor(parameters[4]), # d_min + distance to d_max
-                                  d_min = ceiling(parameters[5]), mu_eta = parameters[6], sigma_eta = parameters[7], sigma_zeta = parameters[8], T_max = parameters[9] + parameters[15], tau_min = parameters[10], v_max = parameters[11] + parameters[12], # v_min + distance to v_max
-                                  v_min = parameters[12], Gamma = parameters[13], H = ceiling(parameters[14]), T_min = parameters[15], tau_max = parameters[10] + parameters[16])$p_sim # Ceiling and floor functions act as integer constraints
+  G <- foreach(i = 1:I, .combine = "cbind", .export = ls(globalenv()), .packages = list.of.packages) %dorng% {
+                 p_sim = Simulate(price = price, N = ceiling(parameters[1]), lambda = parameters[2], a = parameters[3], d_max = ceiling(parameters[5]) + floor(parameters[4]), d_min = ceiling(parameters[5]), mu_eta = parameters[6], sigma_eta = parameters[7], sigma_zeta = parameters[8], T_max = parameters[9] + parameters[15], tau_min = parameters[10], v_max = parameters[11] + parameters[12], v_min = parameters[12], Gamma = parameters[13], H = ceiling(parameters[14]), T_min = parameters[15], tau_max = parameters[10] + parameters[16])$p_sim # Ceiling and floor functions act as integer constraints
                  returns_sim = diff(p_sim[-c(1:201)])
                  if(max(abs(na.omit(returns_sim))) > 10 | sum(is.na(returns_sim)) > 0) {
                    return(rep(NA, 9))
@@ -449,10 +446,10 @@ ObjectiveFunction2 = function(parameters) {
   G = apply(G, 1, mean)
   return(-t(G)%*%W%*%G)
 }
+
 threshold_accepting = function(vertices, fitnesses) {
   tau <- c(3, 1.5, 0) # Each round, we reduce how much worse the best fitness can be than the previous solution. These numbers will almost certainly need tweaking.
   n <- length(fitnesses) - 1 # Number of parameters
-  
   # Now, we try shifting a bunch of parameters one at a time at random, keeping whatever improves the fitness (or at least makes it worse by less than tau)
   for(i in 1:3) { # Each round we reduce tau and increase the number of replications
     for(j in 1:7) { # Within each round we shift up to 5 parameters
@@ -461,7 +458,6 @@ threshold_accepting = function(vertices, fitnesses) {
       # Get new candidate solutions
       temp_vertices <- vertices
       temp_vertices[direction, ] <- temp_vertices[direction, ] + magnitude
-      
       # Restrict shifts to possible values only
       temp_vertices[1, ] <- pmax(30, temp_vertices[1, ])
       temp_vertices[2, ] <- pmax(0.001, temp_vertices[2, ])
@@ -480,10 +476,9 @@ threshold_accepting = function(vertices, fitnesses) {
       temp_vertices[14, ] <- pmin(200, temp_vertices[14, ])
       temp_vertices[16, ] <- pmax(0, temp_vertices[16, ])
       # Get their fitnesses
-      temp_fitnesses <- foreach(k = 1:(n+1), .combine = "c", .export = ls(globalenv()), 
-                                .packages = list.of.packages) %dorng% {
-                                  ObjectiveFunction(c(temp_vertices[, k], 8 + 4 * i))
-                                }
+      temp_fitnesses <- foreach(k = 1:(n+1), .combine = "c", .export = ls(globalenv()), .packages = list.of.packages) %dorng% {
+        ObjectiveFunction(c(temp_vertices[, k], 8 + 4 * i))
+      }
       # Replace the old solutions with the new ones if the best solution from the new set is good enough
       if(max(temp_fitnesses) > max(fitnesses) - tau[i]) {
         vertices <- temp_vertices
@@ -493,51 +488,36 @@ threshold_accepting = function(vertices, fitnesses) {
   }
   return(rbind(vertices, fitnesses))
 }
+
 Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number of replications
-  
   # Get starting vertices and fitnesses
-  initials <- foreach(k = 1:17, .combine = "cbind", .export = ls(globalenv()), 
-                      .packages = list.of.packages) %dorng% {
-                        vertex <- c(runif(1, 40, 240), runif(1, 0, 15), runif(1, 0, 1.5), 
-                                    runif(1, 0, 100), runif(1, 0.01, 90), runif(1, -0.01, 0.01), 
-                                    runif(1, 0, 0.05), runif(1, 0, 0.05), runif(1, 0, 1), 
-                                    runif(1, -1, 0), runif(1, 0, 1), runif(1, -0.5, 0), 
-                                    runif(1, 0, 1), runif(1, 0, 100), runif(1, 0, 1), runif(1, 0, 1))
-                        fitness <- ObjectiveFunction(c(vertex, I))
-                        while(fitness == -100000) { # Ensure that simulation does not result in crazy behaviour
-                          vertex <- c(runif(1, 40, 240), runif(1, 0, 15), runif(1, 0, 1.5), 
-                                      runif(1, 0, 100), runif(1, 0.01, 90), runif(1, -0.01, 0.01), 
-                                      runif(1, 0, 0.05), runif(1, 0, 0.05), runif(1, 0, 1), 
-                                      runif(1, -1, 0), runif(1, 0, 1), runif(1, -0.5, 0), 
-                                      runif(1, 0, 1), runif(1, 0, 100), runif(1, 0, 1), runif(1, 0, 1))
-                          fitness <- ObjectiveFunction(c(vertex, I))
-                        }
-                        c(fitness, vertex)
-                      }
-  
+  initials <- foreach(k = 1:17, .combine = "cbind", .export = ls(globalenv()), .packages = list.of.packages) %dorng% {
+    vertex <- c(runif(1, 40, 240), runif(1, 0, 15), runif(1, 0, 1.5), runif(1, 0, 100), runif(1, 0.01, 90), runif(1, -0.01, 0.01), runif(1, 0, 0.05), runif(1, 0, 0.05), runif(1, 0, 1), runif(1, -1, 0), runif(1, 0, 1), runif(1, -0.5, 0), runif(1, 0, 1), runif(1, 0, 100), runif(1, 0, 1), runif(1, 0, 1))
+    fitness <- ObjectiveFunction(c(vertex, I))
+    while(fitness == -100000) { # Ensure that simulation does not result in crazy behaviour
+      vertex <- c(runif(1, 40, 240), runif(1, 0, 15), runif(1, 0, 1.5), runif(1, 0, 100), runif(1, 0.01, 90), runif(1, -0.01, 0.01), runif(1, 0, 0.05), runif(1, 0, 0.05), runif(1, 0, 1), runif(1, -1, 0), runif(1, 0, 1), runif(1, -0.5, 0), runif(1, 0, 1), runif(1, 0, 100), runif(1, 0, 1), runif(1, 0, 1))
+      fitness <- ObjectiveFunction(c(vertex, I))
+    }
+    c(fitness, vertex)
+  }
   vertices <- initials[-1, ]
   fitnesses <- initials[1, ]
-  
   # Sort from best to worst
   vertices <- vertices[, order(fitnesses, decreasing = T)]
   fitnesses <- sort(fitnesses, decreasing = T)
-  
   # Keep track of best ever result
   best_ever_iteration <- 0
   best_ever_fitness <- fitnesses[1]
   best_ever_vertex <- vertices[, 1]
-  
   progress <- c(0, fitnesses[1], vertices[, 1])
   names(progress) <- c("Iteration", "fitness", "N", "lambda", "a", "d_max - d_min", "d_min", "mu_eta", "sigma_eta", "sigma_zeta", "T_max - T_min", "tau_min", "v_max - v_min", "v_min", "Gamma", "H", "T_min", "tau_max - tau_min")
   print(progress)
-  
   # Set the calibration parameters. These all might need tweaking.
   alpha <- 0.15 # Probability of choosing threshold accepting section
   sigmaNM <- 0.5 # Shrinkage parameter
   rhoNM <- 0.5 # Contraction parameter
   alphaNM <- 1 # Reflection parameter
   gammaNM <- 2 # Expansion parameter
-  
   for (r in 1:maxiter) {
     if (runif(1, 0, 1) < alpha) { # Threshold accepting
       new_parameters <- threshold_accepting(vertices, fitnesses)
@@ -548,7 +528,6 @@ Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number 
       # Reflect the worst point to the other side of the average of each of the other parameters
       centroid <- rowMeans(vertices[, -17])
       reflected_point <- centroid + alphaNM * (centroid - vertices[, 17])
-      
       # Restrict shifts to possible values only
       reflected_point[1] <- max(30, reflected_point[1])
       reflected_point[2] <- max(0.001, reflected_point[2])
@@ -566,7 +545,6 @@ Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number 
       reflected_point[14] <- max(1, reflected_point[14])
       reflected_point[14] <- min(200, reflected_point[14])
       reflected_point[16] <- max(0, reflected_point[16])
-      
       ref_fitness <- ObjectiveFunction2(c(reflected_point, I))
       # Check if new solution is in between best and worst fitnesses
       if(ref_fitness < fitnesses[1] & ref_fitness > fitnesses[16]) {
@@ -577,7 +555,6 @@ Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number 
       else if(ref_fitness > fitnesses[1]) {
         # Expand
         expanded_point <- centroid + gammaNM * (reflected_point - centroid)
-        
         # Restrict shifts to possible values only
         expanded_point[1] <- max(30, expanded_point[1])
         expanded_point[2] <- max(0.001, expanded_point[2])
@@ -595,7 +572,6 @@ Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number 
         expanded_point[14] <- max(1, expanded_point[14])
         expanded_point[14] <- min(200, expanded_point[14])
         expanded_point[16] <- max(0, expanded_point[16])
-        
         exp_fitness <- ObjectiveFunction2(c(expanded_point, I))
         # Check if the solution is even better now
         if(exp_fitness > ref_fitness) {
@@ -617,29 +593,27 @@ Calibrate_NMTA = function(maxiter, I) { # Based off of Platt. 'I' is the number 
         } else {
           # If none of the above helped, shrink everything towards best solution
           vertices <- vertices[, 1] + sigmaNM * (vertices - vertices[, 1])
-          fitnesses <- c(fitnesses[1], foreach(k = 2:17, .combine = "c", .export = ls(globalenv()), 
-                                               .packages = list.of.packages) %dorng% {
-                                                 ObjectiveFunction(c(vertices[, k], I))
-                                               })
+          fitnesses <- c(fitnesses[1], foreach(k = 2:17, .combine = "c", .export = ls(globalenv()), .packages = list.of.packages) %dorng% {
+            ObjectiveFunction(c(vertices[, k], I))
+          }
         }
       }
     }
     # Sort from best to worst and try again
     vertices <- vertices[, order(fitnesses, decreasing = T)]
     fitnesses <- sort(fitnesses, decreasing = T)
-    
     if(fitnesses[1] > best_ever_fitness) { # Keep track of best ever result
       best_ever_iteration <- r
       best_ever_fitness <- fitnesses[1]
       best_ever_vertex <- vertices[, 1]
     }
-    
     progress <- c(r, fitnesses[1], vertices[, 1])
     names(progress) <- c("Iteration", "fitness", "N", "lambda", "a", "d_max - d_min", "d_min", "mu_eta", "sigma_eta", "sigma_zeta", "T_max - T_min", "tau_min", "v_max - v_min", "v_min", "Gamma", "H", "T_min", "tau_max - tau_min")
     print(progress)
   }
   return(c(best_ever_iteration, best_ever_fitness, best_ever_vertex))
 }
+
 ## 95% confidence interval for optimal parameters
 bootstrap_parameters_NMTA = rbind(matrix(NA, nrow = 9, ncol = 17), bootstrap_parameters_NMTA)
 for(i in 1:9) {
@@ -648,12 +622,9 @@ for(i in 1:9) {
   set.seed(i + 2)
   NMTA_CI = Calibrate_NMTA(50, 30)
   stopCluster(cl)
-  bootstrap_parameters_NMTA[i,] = c(ceiling(NMTA_CI[3]), NMTA_CI[4], NMTA_CI[5], ceiling(NMTA_CI[7]) + floor(NMTA_CI[6]), ceiling(NMTA_CI[7]), NMTA_CI[8], NMTA_CI[9], NMTA_CI[10], NMTA_CI[11] + NMTA_CI[17], NMTA_CI[12], NMTA_CI[13] + NMTA_CI[14],
-                                    NMTA_CI[14], NMTA_CI[15], ceiling(NMTA_CI[16]), NMTA_CI[17], NMTA_CI[12] + NMTA_CI[18], NMTA_CI[2])
+  bootstrap_parameters_NMTA[i,] = c(ceiling(NMTA_CI[3]), NMTA_CI[4], NMTA_CI[5], ceiling(NMTA_CI[7]) + floor(NMTA_CI[6]), ceiling(NMTA_CI[7]), NMTA_CI[8], NMTA_CI[9], NMTA_CI[10], NMTA_CI[11] + NMTA_CI[17], NMTA_CI[12], NMTA_CI[13] + NMTA_CI[14], NMTA_CI[14], NMTA_CI[15], ceiling(NMTA_CI[16]), NMTA_CI[17], NMTA_CI[12] + NMTA_CI[18], NMTA_CI[2])
 }
-write.table(cbind(c("N", "lambda", "a", "d_max", "d_min", "mu_eta", "sigma_eta", "sigma_zeta", "T_max", "tau_min", "v_max", "v_min", "Gamma", "H", "T_min", "tau_max", "Fitness"), round(bootstrap_parameters_GA[11, ], 5), round(colMeans(bootstrap_parameters_GA) - qt(0.975, df = nrow(bootstrap_parameters_GA) - 1)*colStdevs(bootstrap_parameters_GA)/sqrt(nrow(bootstrap_parameters_GA)), 5), round(colMeans(bootstrap_parameters_GA) + qt(0.975, df = nrow(bootstrap_parameters_GA) - 1)*colStdevs(bootstrap_parameters_GA)/sqrt(nrow(bootstrap_parameters_GA)), 5),
-                  round(bootstrap_parameters_NMTA[11, ], 5), round(colMeans(bootstrap_parameters_NMTA) - qt(0.975, df = nrow(bootstrap_parameters_NMTA) - 1)*colStdevs(bootstrap_parameters_NMTA)/sqrt(nrow(bootstrap_parameters_NMTA)), 5), round(colMeans(bootstrap_parameters_NMTA) + qt(0.975, df = nrow(bootstrap_parameters_NMTA) - 1)*colStdevs(bootstrap_parameters_NMTA)/sqrt(nrow(bootstrap_parameters_NMTA)), 5)),
-            file = "Parameters.txt", append = FALSE, quote = FALSE, sep = ",", dec = ".", row.names = FALSE, col.names = c("Parameter", "GA", "Lower_GA", "Upper_GA", "NMTA", "Lower_NMTA", "Upper_NMTA"))
+write.table(cbind(c("N", "lambda", "a", "d_max", "d_min", "mu_eta", "sigma_eta", "sigma_zeta", "T_max", "tau_min", "v_max", "v_min", "Gamma", "H", "T_min", "tau_max", "Fitness"), round(bootstrap_parameters_GA[11, ], 5), round(colMeans(bootstrap_parameters_GA) - qt(0.975, df = nrow(bootstrap_parameters_GA) - 1)*colStdevs(bootstrap_parameters_GA)/sqrt(nrow(bootstrap_parameters_GA)), 5), round(colMeans(bootstrap_parameters_GA) + qt(0.975, df = nrow(bootstrap_parameters_GA) - 1)*colStdevs(bootstrap_parameters_GA)/sqrt(nrow(bootstrap_parameters_GA)), 5), round(bootstrap_parameters_NMTA[11, ], 5), round(colMeans(bootstrap_parameters_NMTA) - qt(0.975, df = nrow(bootstrap_parameters_NMTA) - 1)*colStdevs(bootstrap_parameters_NMTA)/sqrt(nrow(bootstrap_parameters_NMTA)), 5), round(colMeans(bootstrap_parameters_NMTA) + qt(0.975, df = nrow(bootstrap_parameters_NMTA) - 1)*colStdevs(bootstrap_parameters_NMTA)/sqrt(nrow(bootstrap_parameters_NMTA)), 5)), file = "Parameters.txt", append = FALSE, quote = FALSE, sep = ",", dec = ".", row.names = FALSE, col.names = c("Parameter", "GA", "Lower_GA", "Upper_GA", "NMTA", "Lower_NMTA", "Upper_NMTA"))
 ## Optimal parameters
 args_NMTA = list(price, bootstrap_parameters_NMTA[11, 1], bootstrap_parameters_NMTA[11, 2], bootstrap_parameters_NMTA[11, 3], bootstrap_parameters_NMTA[11, 4], bootstrap_parameters_NMTA[11, 5], bootstrap_parameters_NMTA[11, 6], bootstrap_parameters_NMTA[11, 7], bootstrap_parameters_NMTA[11, 8], bootstrap_parameters_NMTA[11, 9], bootstrap_parameters_NMTA[11, 10], bootstrap_parameters_NMTA[11, 11], bootstrap_parameters_NMTA[11, 12], bootstrap_parameters_NMTA[11, 13], bootstrap_parameters_NMTA[11, 14], bootstrap_parameters_NMTA[11, 15], bootstrap_parameters_NMTA[11, 16])
 ## Price path confidence intervals
@@ -671,7 +642,7 @@ bootstrap_moments_NMTA = foreach(i = 1:1000, .combine = "rbind", .packages = c("
   Moments(diff(do.call(Simulate, args = args_NMTA)$p_sim[-c(1:201)]), returns)
 }
 stopCluster(cl)
-set.seed(12) # 12, 7
+set.seed(12)
 simulation_NMTA = do.call(Simulate, args = args_NMTA)
 simulation_price_NMTA = simulation_NMTA$p_sim[-c(1:201)] # Simulate using optimised parameters
 simulation_returns_NMTA = diff(simulation_price_NMTA)
