@@ -1,4 +1,4 @@
-# Farmer-Joshi Agent Based Model of Financial Markets
+# Adaptive Farmer-Joshi Agent Based Model of Financial Markets
 
 ## Authors: Ivan Jericevich & Murray McKechnie
 ## Supervisor: A/Prof. Tim Gebbie
